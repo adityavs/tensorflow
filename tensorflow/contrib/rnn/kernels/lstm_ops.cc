@@ -39,6 +39,59 @@ namespace tensorflow {
 typedef Eigen::ThreadPoolDevice CPUDevice;
 typedef Eigen::GpuDevice GPUDevice;
 
+namespace functor {
+
+#define DEFINE_CPU_SPECS(T)                                                    \
+  template <>                                                                  \
+  void LSTMBlockCellFprop<CPUDevice, T, false /* USE_CUBLAS */>::operator()(   \
+      OpKernelContext* ctx, const CPUDevice& d, const T forget_bias,           \
+      const T cell_clip, bool use_peephole, typename TTypes<T>::ConstMatrix x, \
+      typename TTypes<T>::ConstMatrix cs_prev,                                 \
+      typename TTypes<T>::ConstMatrix h_prev,                                  \
+      typename TTypes<T>::ConstMatrix w, typename TTypes<T>::ConstVec wci,     \
+      typename TTypes<T>::ConstVec wcf, typename TTypes<T>::ConstVec wco,      \
+      typename TTypes<T>::ConstVec b, typename TTypes<T>::Matrix xh,           \
+      typename TTypes<T>::Matrix i, typename TTypes<T>::Matrix cs,             \
+      typename TTypes<T>::Matrix f, typename TTypes<T>::Matrix o,              \
+      typename TTypes<T>::Matrix ci, typename TTypes<T>::Matrix co,            \
+      typename TTypes<T>::Matrix icfo, typename TTypes<T>::Matrix h) {         \
+    LSTMBlockCellFpropWithEigen<CPUDevice, T, false /* USE_CUBLAS */>(         \
+        *this, ctx, d, forget_bias, cell_clip, use_peephole, x, cs_prev,       \
+        h_prev, w, wci, wcf, wco, b, xh, i, cs, f, o, ci, co, icfo, h);        \
+  }                                                                            \
+  template <>                                                                  \
+  void LSTMBlockCellBprop<CPUDevice, T, false /* USE_CUBLAS */>::operator()(   \
+      OpKernelContext* ctx, const CPUDevice& d, bool use_peephole,             \
+      typename TTypes<T>::ConstMatrix x,                                       \
+      typename TTypes<T>::ConstMatrix cs_prev,                                 \
+      typename TTypes<T>::ConstMatrix h_prev,                                  \
+      typename TTypes<T>::ConstMatrix w, typename TTypes<T>::ConstVec wci,     \
+      typename TTypes<T>::ConstVec wcf, typename TTypes<T>::ConstVec wco,      \
+      typename TTypes<T>::ConstVec b, typename TTypes<T>::ConstMatrix i,       \
+      typename TTypes<T>::ConstMatrix cs, typename TTypes<T>::ConstMatrix f,   \
+      typename TTypes<T>::ConstMatrix o, typename TTypes<T>::ConstMatrix ci,   \
+      typename TTypes<T>::ConstMatrix co,                                      \
+      typename TTypes<T>::ConstMatrix cs_grad,                                 \
+      typename TTypes<T>::ConstMatrix h_grad, typename TTypes<T>::Matrix do_,  \
+      typename TTypes<T>::Matrix dcs, typename TTypes<T>::Matrix dci,          \
+      typename TTypes<T>::Matrix df, typename TTypes<T>::Matrix di,            \
+      typename TTypes<T>::Matrix dicfo,                                        \
+      typename TTypes<T>::Matrix cs_prev_grad,                                 \
+      typename TTypes<T>::Vec wci_grad, typename TTypes<T>::Vec wcf_grad,      \
+      typename TTypes<T>::Vec wco_grad) {                                      \
+    LSTMBlockCellBpropWithEigen<CPUDevice, T, false /* USE_CUBLAS */>(         \
+        *this, ctx, d, use_peephole, x, cs_prev, h_prev, w, wci, wcf, wco, b,  \
+        i, cs, f, o, ci, co, cs_grad, h_grad, do_, dcs, dci, df, di, dicfo,    \
+        cs_prev_grad, wci_grad, wcf_grad, wco_grad);                           \
+  }                                                                            \
+  template struct LSTMBlockCellFprop<CPUDevice, T, false /* USE_CUBLAS */>;    \
+  template struct LSTMBlockCellBprop<CPUDevice, T, false /* USE_CUBLAS */>;
+
+DEFINE_CPU_SPECS(float);
+#undef DEFINE_CPU_SPECS
+
+}  // namespace functor
+
 template <typename Device, typename T, bool USE_CUBLAS>
 class LSTMBlockCellOp : public OpKernel {
  public:
@@ -112,9 +165,9 @@ class LSTMBlockCellOp : public OpKernel {
 
     // Allocate our output tensors.
     Tensor* i_tensor = nullptr;
-    OP_REQUIRES_OK(
-        ctx, ctx->allocate_output("i", TensorShape({batch_size, cell_size}),
-                                  &i_tensor));
+    OP_REQUIRES_OK(ctx, ctx->forward_input_or_allocate_output(
+                            {"h_prev"}, "i",
+                            TensorShape({batch_size, cell_size}), &i_tensor));
 
     Tensor* cs_tensor = nullptr;
     OP_REQUIRES_OK(
@@ -127,9 +180,9 @@ class LSTMBlockCellOp : public OpKernel {
                                   &f_tensor));
 
     Tensor* o_tensor = nullptr;
-    OP_REQUIRES_OK(
-        ctx, ctx->allocate_output("o", TensorShape({batch_size, cell_size}),
-                                  &o_tensor));
+    OP_REQUIRES_OK(ctx, ctx->forward_input_or_allocate_output(
+                            {"cs_prev"}, "o",
+                            TensorShape({batch_size, cell_size}), &o_tensor));
 
     Tensor* ci_tensor = nullptr;
     OP_REQUIRES_OK(
@@ -387,10 +440,10 @@ class LSTMBlockCellGradOp : public OpKernel {
 
     // Allocate our output tensors.
     Tensor* cs_prev_grad_tensor = nullptr;
-    OP_REQUIRES_OK(ctx,
-                   ctx->allocate_output("cs_prev_grad",
-                                        TensorShape({batch_size, cell_size}),
-                                        &cs_prev_grad_tensor));
+    OP_REQUIRES_OK(
+        ctx, ctx->forward_input_or_allocate_output(
+                 {"cs_grad"}, "cs_prev_grad",
+                 TensorShape({batch_size, cell_size}), &cs_prev_grad_tensor));
 
     Tensor* dicfo_tensor = nullptr;
     OP_REQUIRES_OK(ctx, ctx->allocate_output(
@@ -398,16 +451,19 @@ class LSTMBlockCellGradOp : public OpKernel {
                             &dicfo_tensor));
 
     Tensor* wci_grad_tensor = nullptr;
-    OP_REQUIRES_OK(ctx, ctx->allocate_output("wci_grad", wci_tensor->shape(),
-                                             &wci_grad_tensor));
+    OP_REQUIRES_OK(
+        ctx, ctx->forward_input_or_allocate_output(
+                 {"wci"}, "wci_grad", wci_tensor->shape(), &wci_grad_tensor));
 
     Tensor* wcf_grad_tensor = nullptr;
-    OP_REQUIRES_OK(ctx, ctx->allocate_output("wcf_grad", wcf_tensor->shape(),
-                                             &wcf_grad_tensor));
+    OP_REQUIRES_OK(
+        ctx, ctx->forward_input_or_allocate_output(
+                 {"wcf"}, "wcf_grad", wcf_tensor->shape(), &wcf_grad_tensor));
 
     Tensor* wco_grad_tensor = nullptr;
-    OP_REQUIRES_OK(ctx, ctx->allocate_output("wco_grad", wco_tensor->shape(),
-                                             &wco_grad_tensor));
+    OP_REQUIRES_OK(
+        ctx, ctx->forward_input_or_allocate_output(
+                 {"wco"}, "wco_grad", wco_tensor->shape(), &wco_grad_tensor));
 
     // Allocate our temp tensors.
     Tensor do_tensor;
@@ -492,7 +548,8 @@ namespace functor {
       typename TTypes<T>::Vec wci_grad, typename TTypes<T>::Vec wcf_grad,     \
       typename TTypes<T>::Vec wco_grad);                                      \
                                                                               \
-  extern template struct LSTMBlockCellBprop<GPUDevice, T, true>;
+  extern template struct LSTMBlockCellBprop<GPUDevice, T,                     \
+                                            true /* USE_CUBLAS */>;
 
 DECLARE_GPU_SPEC(float);
 // DECLARE_GPU_SPEC(double);
@@ -521,7 +578,7 @@ namespace {
 template <typename Device, typename T>
 class SliceHelper {
  public:
-  SliceHelper(OpKernelContext* ctx)
+  explicit SliceHelper(OpKernelContext* ctx)
       : ctx_(ctx), device_(ctx_->eigen_device<Device>()) {}
 
   ~SliceHelper() {
@@ -596,7 +653,7 @@ class SliceHelper {
       CHECK(aligned.shape().IsSameSize(t.shape()));
       CHECK_EQ(aligned.dtype(), t.dtype());
     } else {  // allocate a new temporary tensor
-      ctx_->allocate_temp(t.dtype(), t.shape(), &aligned);
+      TF_CHECK_OK(ctx_->allocate_temp(t.dtype(), t.shape(), &aligned));
       pool_.emplace(name, std::make_pair(aligned, true));
     }
     functor::TensorCopyUnaligned<Device, T>()(device_, t.unaligned_flat<T>(),

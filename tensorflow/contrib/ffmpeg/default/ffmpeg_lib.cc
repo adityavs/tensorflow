@@ -69,7 +69,9 @@ bool IsBinaryInstalled(const string& binary_name) {
   for (const string& dir : str_util::Split(path, ':')) {
     const string binary_path = io::JoinPath(dir, binary_name);
     char absolute_path[PATH_MAX + 1];
-    ::realpath(binary_path.c_str(), absolute_path);
+    if (::realpath(binary_path.c_str(), absolute_path) == nullptr) {
+      continue;
+    }
     struct stat statinfo;
     int result = ::stat(absolute_path, &statinfo);
     if (result < 0) {
@@ -139,7 +141,7 @@ template <typename UInt>
 string LittleEndianData(UInt data) {
   static_assert(std::is_unsigned<UInt>::value, "UInt must be unsigned");
   string str;
-  for (int i = 0; i < sizeof(UInt); ++i) {
+  for (size_t i = 0; i < sizeof(UInt); ++i) {
     const unsigned char bits = static_cast<unsigned char>(data & 0xFFU);
     char ch;
     ::memcpy(&ch, &bits, sizeof(bits));
@@ -206,7 +208,15 @@ string GetTempFilename(const string& extension) {
     }
     struct stat statbuf;
     if (!stat(dir, &statbuf) && S_ISDIR(statbuf.st_mode)) {
-      return io::JoinPath(dir, StrCat("tmp_file_", getpid(), ".", extension));
+      string tmp_filepath =
+          io::JoinPath(dir, StrCat("tmp_file_XXXXXX", ".", extension));
+      int fd = mkstemps(&tmp_filepath[0], extension.length() + 1);
+      if (fd < 0) {
+        LOG(FATAL) << "Failed to create temp file.";
+      } else {
+        close(fd);
+        return tmp_filepath;
+      }
     }
   }
   LOG(FATAL) << "No temp directory found.";

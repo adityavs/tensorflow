@@ -39,6 +39,7 @@ TF_CALL_REAL_NUMBER_TYPES(REGISTER_CPU_KERNELS);
       ReductionOp<GPUDevice, type, Eigen::internal::MaxReducer<type>>);
 REGISTER_GPU_KERNELS(float);
 REGISTER_GPU_KERNELS(double);
+REGISTER_GPU_KERNELS(int64);
 
 // A special GPU kernel for int32.
 // TODO(b/25387198): Also enable int32 in device memory. This kernel
@@ -56,5 +57,29 @@ REGISTER_KERNEL_BUILDER(
 #undef REGISTER_GPU_KERNELS
 
 #endif
+
+#ifdef TENSORFLOW_USE_SYCL
+#define REGISTER_SYCL_KERNELS(type)         \
+  REGISTER_KERNEL_BUILDER(                  \
+      Name("Max")                           \
+          .Device(DEVICE_SYCL)              \
+          .TypeConstraint<type>("T")        \
+          .TypeConstraint<int32>("Tidx")    \
+          .HostMemory("reduction_indices"), \
+      ReductionOp<SYCLDevice, type, Eigen::internal::MaxReducer<type>>);
+REGISTER_SYCL_KERNELS(float);
+REGISTER_SYCL_KERNELS(double);
+
+REGISTER_KERNEL_BUILDER(
+    Name("Max")
+        .Device(DEVICE_SYCL)
+        .HostMemory("reduction_indices")
+        .HostMemory("input")
+        .HostMemory("output")
+        .TypeConstraint<int32>("T")
+        .TypeConstraint<int32>("Tidx"),
+    ReductionOp<CPUDevice, int32, Eigen::internal::MaxReducer<int32>>);
+#undef REGISTER_SYCL_KERNELS
+#endif // TENSORFLOW_USE_SYCL
 
 }  // namespace tensorflow
